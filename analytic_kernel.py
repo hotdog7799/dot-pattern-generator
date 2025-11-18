@@ -6,58 +6,179 @@ import sys
 from time import time
 from datetime import datetime
 import scipy.io
+import pandas as pd  # 엑셀 파일을 읽기 위해 pandas 추가
+import glob
 
 timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
 
-# PyYAML이 설치되어 있어야 합니다: pip install PyYAML
-# OpenCV가 설치되어 있어야 합니다: pip install opencv-python-headless
+# PyYAML, OpenCV, Pandas, XlsxWriter가 필요합니다.
+# pip install PyYAML opencv-python-headless pandas xlsxwriter
+
+# -------------------------------
+# [신규] 사용자 설정 모드
+# -------------------------------
+# MODE 1: 수동으로 경로 지정
+# MODE 2: Outputs 폴더에서 가장 최신 폴더 자동 탐색
+MODE = 2
+
+# MODE 1일 경우, 1단계(run_experiments.py)에서 생성된 *하위 폴더* 경로를 지정하세요.
+# (주의: 'PoissonDiskRandomDots' 폴더까지 포함해야 합니다)
+# 예: "./Outputs/random_dots_M_2560x2560_1344dots_mult_1.50_20251117_220133/PoissonDiskRandomDots"
+MANUAL_PATH = "./Outputs/random_dots_M_2560x2560_1344dots_mult_1.50_20251117_220133/PoissonDiskRandomDots"
+# -------------------------------
+
+
+def find_latest_output_files(base_dir="./Outputs"):
+    """
+    [MODE 2용] 지정된 Outputs 폴더에서 가장 최근에 생성된
+    'random_dots_M...' 폴더를 찾아
+    'pattern_settings.xlsx' 파일과 '.png' 파일 경로를 반환합니다.
+    """
+    try:
+        list_of_dirs = glob.glob(os.path.join(base_dir, "random_dots_M_*"))
+        if not list_of_dirs:
+            raise FileNotFoundError(f"No 'random_dots_M_*' folders found in {base_dir}")
+
+        latest_dir_base = max(list_of_dirs, key=os.path.getctime)
+        latest_dir = os.path.join(latest_dir_base, "PoissonDiskRandomDots")
+
+        if not os.path.exists(latest_dir):
+            raise FileNotFoundError(
+                f"Subfolder 'PoissonDiskRandomDots' not found in {latest_dir_base}"
+            )
+
+        print(f"Found latest output directory: {latest_dir}")
+
+        # 1. Excel/CSV 파일 찾기
+        settings_files = glob.glob(os.path.join(latest_dir, "*_settings.xlsx"))
+        if not settings_files:
+            excel_files = glob.glob(os.path.join(latest_dir, "*_settings.csv"))
+            if not excel_files:
+                raise FileNotFoundError(
+                    f"No '*_settings.xlsx' or '.csv' file found in {latest_dir}"
+                )
+            settings_path = excel_files[0]
+        else:
+            settings_path = settings_files[0]
+
+        # 2. PNG 파일 찾기
+        png_files = glob.glob(os.path.join(latest_dir, "*.png"))
+        if not png_files:
+            raise FileNotFoundError(f"No '.png' pattern file found in {latest_dir}")
+
+        png_path = png_files[0]
+
+        return settings_path, png_path
+
+    except FileNotFoundError as e:
+        print(f"Error finding files: {e}")
+        print("Please run 'run_experiments.py' first to generate a pattern.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"An unexpected error occurred while finding files: {e}")
+        sys.exit(1)
+
+
+def load_params_from_excel(excel_path):
+    """
+    pattern_settings.xlsx/csv 파일에서 파라미터를 읽어 딕셔너리로 반환합니다.
+    """
+    try:
+        if excel_path.endswith(".xlsx"):
+            df = pd.read_excel(excel_path)
+        else:
+            df = pd.read_csv(excel_path)
+
+        params = df.set_index("name")["value"].to_dict()
+        print(f"Successfully loaded parameters from {excel_path}")
+        return params
+
+    except Exception as e:
+        print(f"Error loading parameters from {excel_path}: {e}")
+        sys.exit(1)
 
 
 def create_height_map():
     """
-    config.yaml과 닷 패턴 이미지(PSF)를 기반으로
+    닷 패턴(PSF)과 엑셀 설정 파일을 기반으로
     최종 MLA 높이 맵을 생성합니다.
+    MODE 설정에 따라 최신 파일을 탐색하거나 수동 경로를 사용합니다.
     """
 
-    # --- 1. 설정 로드 ---
-    config_path = "config.yaml"
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        print(f"Successfully loaded config from {config_path}")
-    except Exception as e:
-        print(f"Error loading {config_path}: {e}")
+    # --- 1. [수정됨] 설정 로드 (MODE에 따라 경로 결정) ---
+
+    psf_image_path = ""
+    settings_path = ""
+
+    if MODE == 1:
+        # --- 수동 모드 ---
+        print(f"--- Mode 1: Manual Path ---")
+        target_dir = MANUAL_PATH
+        if not os.path.isdir(target_dir):
+            print(f"Error: Manual path not found: {target_dir}")
+            print("Please check the 'MANUAL_PATH' variable at the top of this script.")
+            sys.exit(1)
+
+        try:
+            # 1. Excel/CSV 파일 찾기
+            settings_files = glob.glob(os.path.join(target_dir, "*_settings.xlsx"))
+            if not settings_files:
+                settings_files = glob.glob(os.path.join(target_dir, "*_settings.csv"))
+            if not settings_files:
+                raise FileNotFoundError(
+                    f"No '*_settings.xlsx' or '.csv' file found in {target_dir}"
+                )
+            settings_path = settings_files[0]
+
+            # 2. PNG 파일 찾기
+            png_files = glob.glob(os.path.join(target_dir, "*.png"))
+            if not png_files:
+                raise FileNotFoundError(f"No '.png' pattern file found in {target_dir}")
+            psf_image_path = png_files[0]
+
+            print(f"Using manual settings: {settings_path}")
+            print(f"Using manual pattern: {psf_image_path}")
+
+        except FileNotFoundError as e:
+            print(f"Error in manual path: {e}")
+            sys.exit(1)
+
+    elif MODE == 2:
+        # --- 자동 최신 탐색 모드 ---
+        print(f"--- Mode 2: Auto-Detect Latest ---")
+        settings_path, psf_image_path = find_latest_output_files()
+        print(f"Using latest settings: {settings_path}")
+        print(f"Using latest pattern: {psf_image_path}")
+
+    else:
+        print(f"Error: Invalid MODE ({MODE}). Must be 1 or 2.")
         sys.exit(1)
+
+    # --- 1.5. 파라미터 로드 ---
+    params = load_params_from_excel(settings_path)
 
     # --- 2. 파라미터 추출 및 계산 (단위: um) ---
     try:
-        gen_params = config["generation_parameters"]
-        exp_params = config["experiment"]
+        # params 딕셔너리에서 파라미터 읽기 (gen_random_dot_pixel_new.py에서 저장한 값)
+        pixel_size_m = float(params["Pixel_Size"])
+        h_max_um = float(params["HeightProfile_Max_um"])
+        obj_dist_mm = float(params["ObjectDistance_mm"])
+        img_dist_mm = float(params["ImageDistance_mm"])
+        n = float(params["Refractive_Index"])  # 굴절률
 
-        # config.yaml에서 파라미터 읽기
-        pixel_size_m = float(gen_params["pixel_size_m"])
-        h_max_um = float(gen_params["height_max_um"])
-        obj_dist_mm = float(gen_params["obj_dist_mm"])
-        img_dist_mm = float(gen_params["img_dist_mm"])
-        n = float(gen_params["n"])  # 굴절률
-
-        # 최종 맵 크기
-        img_W = int(exp_params["image_width"])
-        img_H = int(exp_params["image_height"])
+        # 최종 맵 크기 (엑셀에서 정사각형 크기를 읽어옴)
+        img_W = int(params["M_width"])  # 예: 2560
+        img_H = int(params["M_height"])  # 예: 2560
 
         # (단위 통일: um)
         px_size_um = pixel_size_m * 1e6  # (예: 2.7 um)
 
-        # 렌즈 파라미터 계산 (이전 응답과 동일)
-        # 1/f = 1/o + 1/i
+        # 렌즈 파라미터 계산
         EFL_mm = 1.0 / (1.0 / obj_dist_mm + 1.0 / img_dist_mm)
-        # 1/f = (n-1) * (1/R)  (plano-convex)
         ROC_mm = EFL_mm * (n - 1)
-
-        ROC_um = ROC_mm * 1000.0  # (예: 470 um)
+        ROC_um = ROC_mm * 1000.0
 
         # 렌즈 반경 (sag 공식)
-        # r^2 = ROC^2 - (ROC - h_max)^2
         r_lens_um = np.sqrt(ROC_um**2 - (ROC_um - h_max_um) ** 2)
 
         print("\n--- Calculated Lenslet Parameters ---")
@@ -68,7 +189,7 @@ def create_height_map():
         print(f"Lenslet Radius (r_lens): {r_lens_um:.2f} um")
 
     except KeyError as e:
-        print(f"Error: Missing key {e} in {config_path}")
+        print(f"Error: Missing key {e} in {settings_path}")
         sys.exit(1)
     except Exception as e:
         print(f"Error processing parameters: {e}")
@@ -91,7 +212,7 @@ def create_height_map():
     X_um, Y_um = np.meshgrid(u_um, u_um)
     RHO_um = np.sqrt(X_um**2 + Y_um**2)
 
-    # 구면 방정식 적용 (이전 응답과 동일)
+    # 구면 방정식 적용
     K = np.zeros((k_size_px, k_size_px), dtype=np.float32)
     mask = RHO_um <= r_lens_um
 
@@ -104,15 +225,8 @@ def create_height_map():
     print("[OK] Lenslet kernel (K) generated.")
 
     # --- 4. 닷 패턴(PSF) 로드 ---
-    # !!! 중요: 이 경로를 생성된 닷 패턴 .png 파일로 수정하세요 !!!
-    psf_image_path = "/home/hotdog/sample/PatternGenerator/Outputs/random_dots_M_2560x1600_1344dots_mult_1.50_20251114_200646/PoissonDiskRandomDots/20251114_200646_PoissonDiskRandomDots_M_2560x1600_avg_dist_149um_mult_1.50.png"
-    # (위 경로는 예시입니다. 실제 파일 경로를 넣어주세요.)
-
     print(f"\n--- Loading Dot Pattern (PSF) ---")
-    if not os.path.exists(psf_image_path):
-        print(f"Error: Dot pattern file not found at {psf_image_path}")
-        print("Please update 'psf_image_path' variable in this script.")
-        sys.exit(1)
+    print(f"Loading from: {psf_image_path}")
 
     # 흑백(Grayscale)으로 이미지 로드 (0 또는 255 값)
     psf_dots = cv2.imread(psf_image_path, cv2.IMREAD_GRAYSCALE)
@@ -121,12 +235,12 @@ def create_height_map():
         print(f"Error: Failed to load image from {psf_image_path}")
         sys.exit(1)
 
+    # 엑셀에서 읽어온 정사각형 크기(img_H, img_W)와 비교
     if psf_dots.shape != (img_H, img_W):
         print(
-            f"Warning: Loaded image size ({psf_dots.shape}) does not match config ({img_H}, {img_W})."
+            f"Error: Loaded image size ({psf_dots.shape}) does not match parameters from settings file ({img_H}, {img_W})."
         )
-        # 필요시 크기 조절 (하지만 일치해야 함)
-        # psf_dots = cv2.resize(psf_dots, (img_W, img_H))
+        sys.exit(1)
 
     print(f"Loaded dot pattern: {psf_dots.shape} (HxW)")
 
@@ -177,23 +291,34 @@ def create_height_map():
     print(f"[OK] Height map generated in {end_stamp - start_stamp:.2f} seconds.")
 
     # --- 6. 결과 저장 ---
-    # `run_generation`에서 생성한 폴더를 재사용하거나 새 폴더를 지정
+    # [수정됨] `run_generation`에서 생성한 폴더를 재사용
     output_dir = os.path.dirname(psf_image_path)  # PSF와 같은 폴더에 저장
 
-    # 1. 원본 데이터 저장 (float32, 단위: um)
-    output_npy_path = os.path.join(
-        output_dir, f"{timestamp}_{r_lens_um:.2f}um_MLA_Height_Map_meters.npy"
-    )
-    H_map_meters = H_map * 1e-6
-    np.save(output_npy_path, H_map_meters)
-    # np.save(output_npy_path, H_map)
-    print(f"\nHeight map (raw float32, um) saved to: {output_npy_path}")
+    # 엑셀 파일 이름에서 시간 부분을 따와서 파일 이름 생성
+    base_filename_from_excel = os.path.basename(settings_path)
+    # timestamp_from_excel = base_filename_from_excel.split("_")[0]  # 시간 부분 추출
+    timestamp_from_excel = timestamp
 
-    output_mat_path = os.path.join(output_dir, f"{timestamp}_heightmap.mat")
+    # 1. 원본 데이터 저장 (float32, 단위: m)
+    output_npy_path = os.path.join(
+        output_dir,
+        f"{timestamp_from_excel}_{r_lens_um:.2f}um_MLA_Height_Map_meters.npy",
+    )
+    H_map_meters = H_map * 1e-6  # 미터 단위로 변환
+    np.save(output_npy_path, H_map_meters)
+    print(f"\nHeight map (raw float32, meters) saved to: {output_npy_path}")
+
+    # .mat 파일로도 저장 (MATLAB 호환용)
+    output_mat_path = os.path.join(output_dir, f"{timestamp_from_excel}_heightmap.mat")
     scipy.io.savemat(output_mat_path, {"map": H_map_meters})
+    print(f".mat file saved to: {output_mat_path}")
 
     # 2. 시각화용 이미지 저장 (0-255 uint8)
-    output_png_path = os.path.join(output_dir, "MLA_Height_Map_Visualization.png")
+    output_png_path = os.path.join(
+        output_dir,
+        heightmap,
+        f"{timestamp_from_excel}_MLA_Height_Map_Visualization.png",
+    )
     H_map_vis = (H_map / h_max_um) * 255.0  # 0~h_max_um 범위를 0~255로 스케일링
     H_map_vis = H_map_vis.astype(np.uint8)
     cv2.imwrite(output_png_path, H_map_vis)

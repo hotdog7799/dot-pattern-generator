@@ -447,25 +447,28 @@ def run_generation(
         f"Dot to dot distance : {Dot2Dot_Distance_um:.2f} um\n"
     )  # 소수점 2자리로 포맷팅
 
-    # --- 2. 닷 생성 ---
+    # --- 2. 닷 생성 ---# --- 2. 닷 생성 ---
     RDG = RandomDotsGenerator(
-        target_size=(out_W, out_H),
+        target_size=(out_W, out_H),  # (예: 2560, 1600)
         avg_distance_um=Dot2Dot_Distance_um,
         pixel_size=Pixel_Size,
         visualize=False,
     )
+    # Pattern_Poisson은 (H, W) 크기 (예: 1600, 2560)의 직사각형 배열
     Pattern_Poisson = RDG.PoissonDiskRandomDots()
 
     print("Poisson Disk Sampling : done")
     print(f"Target Dots : {RDG.numDots}ea")
 
+    # rc 좌표는 원본 (1600, 2560) 기준으로 계산 (정확함)
     rc = torch.nonzero(
         torch.tensor(Pattern_Poisson) > 0, as_tuple=False
     )  # (N,2), row,col
     print(f"Actual Dots : {rc.shape[0]}ea\n")
 
-    S = None  # RDG.PoissonDiskRandomDots에서 samples를 반환하지 않으므로 S는 None
+    S = None
     min_dist_pixels = Dot2Dot_Distance_um / (Pixel_Size * 1e6)
+    # verify_cutoff도 원본 (1600, 2560) 기준으로 수행 (정확함)
     verify_cutoff(
         samples_float_xy=S,
         image_rc=rc,
@@ -473,20 +476,51 @@ def run_generation(
         device=DEVICE,
     )
 
+    # --- [신규] 2.5. 정사각형으로 제로 패딩 ---
+    gen_H, gen_W = Pattern_Poisson.shape
+    max_side = max(gen_W, gen_H)  # 예: max(2560, 1600) -> 2560
+
+    out_final_W = max_side
+    out_final_H = max_side
+
+    Pattern_Square = Pattern_Poisson  # 기본값은 원본
+
+    if gen_H != gen_W:
+        print(
+            f"Padding rectangular pattern ({gen_H}x{gen_W}) to square ({max_side}x{max_side})..."
+        )
+        Pattern_Square = np.zeros((max_side, max_side), dtype=np.uint8)
+
+        # 중앙 정렬을 위한 패딩 계산
+        pad_H_top = (max_side - gen_H) // 2
+        pad_H_bottom = max_side - gen_H - pad_H_top
+        pad_W_left = (max_side - gen_W) // 2
+        pad_W_right = max_side - gen_W - pad_W_left
+
+        # 중앙에 붙여넣기
+        Pattern_Square[
+            pad_H_top : max_side - pad_H_bottom, pad_W_left : max_side - pad_W_right
+        ] = Pattern_Poisson
+
+        print(
+            f"Padding complete. Top:{pad_H_top}, Bottom:{pad_H_bottom}, Left:{pad_W_left}, Right:{pad_W_right}"
+        )
+
     # --- 3. 파일 저장 ---
     now = datetime.datetime.now()
     filename_time = now.strftime("%Y%m%d_%H%M%S")
 
-    # 폴더 이름에 멀티플라이어 값 추가
-    Base_dir = f"./Outputs/random_dots_M_{out_W}x{out_H}_{RDG.numDots}dots_mult_{dot_distance_multiplier:.2f}_{filename_time}"
+    # [수정됨] 폴더 이름에 최종 정사각형 크기(max_side) 사용
+    Base_dir = f"./Outputs/random_dots_M_{out_final_W}x{out_final_H}_{RDG.numDots}dots_mult_{dot_distance_multiplier:.2f}_{filename_time}"
     Poisson_dir = os.path.join(Base_dir, "PoissonDiskRandomDots")
     os.makedirs(Poisson_dir, exist_ok=True)
 
-    # 파일 이름에 파라미터 명시
-    filename_base = f"PoissonDiskRandomDots_M_{out_W}x{out_H}_avg_dist_{Dot2Dot_Distance_um:.0f}um_mult_{dot_distance_multiplier:.2f}"
+    # [수정됨] 파일 이름에 최종 정사각형 크기(max_side) 사용
+    filename_base = f"PoissonDiskRandomDots_M_{out_final_W}x{out_final_H}_avg_dist_{Dot2Dot_Distance_um:.0f}um_mult_{dot_distance_multiplier:.2f}"
     filename_png = f"{filename_time}_{filename_base}.png"
 
-    cv2.imwrite(os.path.join(Poisson_dir, filename_png), Pattern_Poisson)
+    # [수정됨] Pattern_Square (패딩된 정사각형 이미지)를 저장
+    cv2.imwrite(os.path.join(Poisson_dir, filename_png), Pattern_Square)
     print(f"Pattern saved in {Base_dir}")
 
     # --- 4. 파라미터 저장 ---
@@ -494,8 +528,12 @@ def run_generation(
         ("Pixel_Size", Pixel_Size, "m", "Pixel size (image plane)"),
         ("MaskSize_um", MaskSize_um, "um", "Mask size (micrometers)"),
         ("MaskSize", MaskSize, "m", "Mask size (meters)"),
-        ("M_width", out_W, "-", "Target size width(pixels)"),
-        ("M_height", out_H, "-", "Target size height(pixels)"),
+        # [신규] 원본 생성 크기 (직사각형)
+        ("Gen_M_width", out_W, "-", "Generation size width (pixels)"),
+        ("Gen_M_height", out_H, "-", "Generation size height (pixels)"),
+        # [수정됨] 최종 출력 크기 (정사각형)
+        ("M_width", out_final_W, "-", "Output size width (pixels)"),
+        ("M_height", out_final_H, "-", "Output size height (pixels)"),
         ("HeightProfile_Max_um", HeightProfile_Max_um, "um", "Max height of mask"),
         ("H_max", H_max, "m", "Max height of mask (meters)"),
         ("ObjectDistance_mm", ObjectDistance_mm, "mm", "Object distance"),
@@ -534,7 +572,13 @@ def run_generation(
             "-",
             "Aperture percent list",
         ),
-        ("Target_Dots_Count", int(RDG.numDots), "ea", "Number of target dots"),
+        # [수정됨] Target Dots 개수 설명 변경
+        (
+            "Target_Dots_Count",
+            int(RDG.numDots),
+            "ea",
+            "Number of target dots (in Gen_M area)",
+        ),
         (
             "Actual_Dots_Count",
             int(rc.shape[0]),
