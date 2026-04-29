@@ -61,6 +61,7 @@ for i, mult in enumerate(multiplier_list):
         "out_W": full_W,
         "out_H": full_H,
         "dot_distance_multiplier": mult,
+        "padding": False,
         # 'n' 인자 이름이 다르다면 여기서 매핑: 'n': gen_params.get('refractive_index', 1.53)
     }
 

@@ -19,16 +19,20 @@ timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
 # -------------------------------
 # MODE 1: 수동으로 경로 지정
 # MODE 2: Outputs 폴더에서 가장 최신 폴더 자동 탐색
-MODE = 2
+MODE = 1
 
 # MODE 1일 경우, 1단계(run_experiments.py)에서 생성된 *하위 폴더* 경로를 지정하세요.
 # (주의: 'PoissonDiskRandomDots' 폴더까지 포함해야 합니다)
 # 예: "./Outputs/random_dots_M_2560x2560_1344dots_mult_1.50_20251117_220133/PoissonDiskRandomDots"
-MANUAL_PATH = "./Outputs/random_dots_M_2560x2560_1344dots_mult_1.50_20251117_220133/PoissonDiskRandomDots"
-# -------------------------------
+MANUAL_PATHS = [
+    "./Outputs/random_dots_20260429_120947_2560x1600_319dots_mult_1.10",
+    "./Outputs/random_dots_20260429_121038_2560x1600_268dots_mult_1.20",
+    "./Outputs/random_dots_20260429_121121_2560x1600_228dots_mult_1.30",
+
+]# -------------------------------
 
 
-def find_latest_output_files(base_dir="./Outputs"):
+def find_latest_output_files(base_dir="/mnt/NAS/Grants/25_AIOBIO/mask"):
     """
     [MODE 2용] 지정된 Outputs 폴더에서 가장 최근에 생성된
     'random_dots_M...' 폴더를 찾아
@@ -98,7 +102,7 @@ def load_params_from_excel(excel_path):
         sys.exit(1)
 
 
-def create_height_map():
+def create_height_map(target_dir=None):
     """
     닷 패턴(PSF)과 엑셀 설정 파일을 기반으로
     최종 MLA 높이 맵을 생성합니다.
@@ -113,35 +117,28 @@ def create_height_map():
     if MODE == 1:
         # --- 수동 모드 ---
         print(f"--- Mode 1: Manual Path ---")
-        target_dir = MANUAL_PATH
-        if not os.path.isdir(target_dir):
-            print(f"Error: Manual path not found: {target_dir}")
-            print("Please check the 'MANUAL_PATH' variable at the top of this script.")
-            sys.exit(1)
+        current_path = target_dir
+        print(f"--- Processing Path: {current_path} ---")
+        
+        if not os.path.isdir(current_path):
+            print(f"Error: Path not found: {current_path}")
+            return # sys.exit(1) 대신 return을 사용하여 다음 루프로 넘어가게 함
 
-        try:
-            # 1. Excel/CSV 파일 찾기
-            settings_files = glob.glob(os.path.join(target_dir, "*_settings.xlsx"))
-            if not settings_files:
-                settings_files = glob.glob(os.path.join(target_dir, "*_settings.csv"))
-            if not settings_files:
-                raise FileNotFoundError(
-                    f"No '*_settings.xlsx' or '.csv' file found in {target_dir}"
-                )
-            settings_path = settings_files[0]
+        # 1. Excel/CSV 파일 찾기 (기존 로직 유지)
+        settings_files = glob.glob(os.path.join(current_path, "*_settings.xlsx"))
+        if not settings_files:
+            settings_files = glob.glob(os.path.join(current_path, "*_settings.csv"))
+        if not settings_files:
+            print(f"Skipping: No settings file in {current_path}")
+            return
+        settings_path = settings_files[0]
 
-            # 2. PNG 파일 찾기
-            png_files = glob.glob(os.path.join(target_dir, "*.png"))
-            if not png_files:
-                raise FileNotFoundError(f"No '.png' pattern file found in {target_dir}")
-            psf_image_path = png_files[0]
-
-            print(f"Using manual settings: {settings_path}")
-            print(f"Using manual pattern: {psf_image_path}")
-
-        except FileNotFoundError as e:
-            print(f"Error in manual path: {e}")
-            sys.exit(1)
+        # 2. PNG 파일 찾기
+        png_files = glob.glob(os.path.join(current_path, "*.png"))
+        if not png_files:
+            print(f"Skipping: No .png file in {current_path}")
+            return
+        psf_image_path = png_files[0]
 
     elif MODE == 2:
         # --- 자동 최신 탐색 모드 ---
@@ -316,8 +313,7 @@ def create_height_map():
     # 2. 시각화용 이미지 저장 (0-255 uint8)
     output_png_path = os.path.join(
         output_dir,
-        heightmap,
-        f"{timestamp_from_excel}_MLA_Height_Map_Visualization.png",
+        f"heightmap_{timestamp_from_excel}_MLA_Height_Map_Visualization.png",
     )
     H_map_vis = (H_map / h_max_um) * 255.0  # 0~h_max_um 범위를 0~255로 스케일링
     H_map_vis = H_map_vis.astype(np.uint8)
@@ -326,4 +322,15 @@ def create_height_map():
 
 
 if __name__ == "__main__":
-    create_height_map()
+    if MODE == 1:
+        if not MANUAL_PATHS:
+            print("MANUAL_PATHS 리스트가 비어있습니다.")
+        else:
+            print(f"Total {len(MANUAL_PATHS)} folders to process.")
+            for i, path in enumerate(MANUAL_PATHS):
+                print(f"\n[Progress: {i+1}/{len(MANUAL_PATHS)}]")
+                create_height_map(path)
+            print("\n--- All tasks completed ---")
+    
+    elif MODE == 2:
+        create_height_map() # 인자 없이 호출하면 내부에서 자동 탐색

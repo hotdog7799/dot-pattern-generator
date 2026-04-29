@@ -17,6 +17,7 @@ import os, csv, datetime
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device: {}\n".format(DEVICE))
 
+# OUTPUT_BASE_DIR = "/mnt/NAS/Grants/25_AIOBIO/mask"
 
 class RandomDotsGenerator:
     def __init__(
@@ -401,6 +402,7 @@ def run_generation(
     obj_dist_mm=6.5,
     img_dist_mm=1.1,
     n=1.53,
+    padding=False,
 ):
     """
     지정된 파라미터로 랜덤 닷 패턴을 생성하고 저장합니다.
@@ -442,7 +444,7 @@ def run_generation(
     print(f"Image distance : {ImageDistance_mm} mm")
     print(f"EFL : {EFL_UnitLens_mm} mm")
     print(f"Radius of curvature : {Radius_of_Curvature_UnitLens_mm} mm")
-    print(f"Radius of circle : {d*1000} mm")
+    print(f"Radius of circle : {d*1000:.3f} mm")
     print(
         f"Dot to dot distance : {Dot2Dot_Distance_um:.2f} um\n"
     )  # 소수점 2자리로 포맷팅
@@ -479,48 +481,56 @@ def run_generation(
     # --- [신규] 2.5. 정사각형으로 제로 패딩 ---
     gen_H, gen_W = Pattern_Poisson.shape
     max_side = max(gen_W, gen_H)  # 예: max(2560, 1600) -> 2560
+    if padding:
+        out_final_W = max_side
+        out_final_H = max_side
 
-    out_final_W = max_side
-    out_final_H = max_side
+        Pattern_Square = Pattern_Poisson  # 기본값은 원본
 
-    Pattern_Square = Pattern_Poisson  # 기본값은 원본
+        if gen_H != gen_W:
+            print(
+                f"Padding rectangular pattern ({gen_H}x{gen_W}) to square ({max_side}x{max_side})..."
+            )
+            Pattern_Square = np.zeros((max_side, max_side), dtype=np.uint8)
 
-    if gen_H != gen_W:
-        print(
-            f"Padding rectangular pattern ({gen_H}x{gen_W}) to square ({max_side}x{max_side})..."
-        )
-        Pattern_Square = np.zeros((max_side, max_side), dtype=np.uint8)
+            # 중앙 정렬을 위한 패딩 계산
+            pad_H_top = (max_side - gen_H) // 2
+            pad_H_bottom = max_side - gen_H - pad_H_top
+            pad_W_left = (max_side - gen_W) // 2
+            pad_W_right = max_side - gen_W - pad_W_left
 
-        # 중앙 정렬을 위한 패딩 계산
-        pad_H_top = (max_side - gen_H) // 2
-        pad_H_bottom = max_side - gen_H - pad_H_top
-        pad_W_left = (max_side - gen_W) // 2
-        pad_W_right = max_side - gen_W - pad_W_left
+            # 중앙에 붙여넣기
+            Pattern_Square[
+                pad_H_top : max_side - pad_H_bottom, pad_W_left : max_side - pad_W_right
+            ] = Pattern_Poisson
 
-        # 중앙에 붙여넣기
-        Pattern_Square[
-            pad_H_top : max_side - pad_H_bottom, pad_W_left : max_side - pad_W_right
-        ] = Pattern_Poisson
-
-        print(
-            f"Padding complete. Top:{pad_H_top}, Bottom:{pad_H_bottom}, Left:{pad_W_left}, Right:{pad_W_right}"
-        )
+            print(
+                f"Padding complete. Top:{pad_H_top}, Bottom:{pad_H_bottom}, Left:{pad_W_left}, Right:{pad_W_right}"
+            )
+    else:
+        print("No padding")
+        out_final_W = gen_W
+        out_final_H = gen_H
+        Pattern_Square = Pattern_Poisson  # 기본값은 원본
 
     # --- 3. 파일 저장 ---
     now = datetime.datetime.now()
     filename_time = now.strftime("%Y%m%d_%H%M%S")
 
     # [수정됨] 폴더 이름에 최종 정사각형 크기(max_side) 사용
-    Base_dir = f"./Outputs/random_dots_M_{out_final_W}x{out_final_H}_{RDG.numDots}dots_mult_{dot_distance_multiplier:.2f}_{filename_time}"
-    Poisson_dir = os.path.join(Base_dir, "PoissonDiskRandomDots")
-    os.makedirs(Poisson_dir, exist_ok=True)
+    Base_dir = f"./Outputs/random_dots_{filename_time}_{out_final_W}x{out_final_H}_{RDG.numDots}dots_mult_{dot_distance_multiplier:.2f}"
+    os.makedirs(Base_dir, exist_ok=True)
+    # Base_dir = f"/random_dots_M_{out_final_W}x{out_final_H}_{RDG.numDots}dots_mult_{dot_distance_multiplier:.2f}_{filename_time}"
+    # Base_dir = os.path.join(OUTPUT_BASE_DIR,Base_dir)
+    # Poisson_dir = os.path.join(Base_dir, "PoissonDiskRandomDots")
+    # os.makedirs(Poisson_dir, exist_ok=True)
 
     # [수정됨] 파일 이름에 최종 정사각형 크기(max_side) 사용
     filename_base = f"PoissonDiskRandomDots_M_{out_final_W}x{out_final_H}_avg_dist_{Dot2Dot_Distance_um:.0f}um_mult_{dot_distance_multiplier:.2f}"
     filename_png = f"{filename_time}_{filename_base}.png"
 
     # [수정됨] Pattern_Square (패딩된 정사각형 이미지)를 저장
-    cv2.imwrite(os.path.join(Poisson_dir, filename_png), Pattern_Square)
+    cv2.imwrite(os.path.join(Base_dir, filename_png), Pattern_Square)
     print(f"Pattern saved in {Base_dir}")
 
     # --- 4. 파라미터 저장 ---
@@ -586,11 +596,11 @@ def run_generation(
             "Number of actual generated dots",
         ),
         ("Output_Image_File", filename_png, "-", "Saved image filename"),
-        ("Output_Folder", os.path.abspath(Poisson_dir), "-", "Output directory"),
+        ("Output_Folder", os.path.abspath(Base_dir), "-", "Output directory"),
         ("Saved_At", now.isoformat(timespec="seconds"), "-", "Save timestamp (local)"),
     ]
 
-    save_parameters(params, Poisson_dir, filename_base)
+    save_parameters(params, Base_dir, filename_base)
     print(f"--- Generation Complete ---\n")
 
 
